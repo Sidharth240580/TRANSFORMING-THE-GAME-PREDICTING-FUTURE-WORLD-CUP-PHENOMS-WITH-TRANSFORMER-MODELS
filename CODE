@@ -1,0 +1,167 @@
+# Install libraries if not already installed
+try:
+    import plotly
+    import folium
+    import ipywidgets
+    import pandas as pd
+    import geopy
+except ImportError:
+    !pip install plotly folium ipywidgets pandas geopy
+
+# Import libraries
+import pandas as pd
+import plotly.express as px
+import folium
+from folium.plugins import MarkerCluster
+from IPython.display import display, clear_output, HTML
+import ipywidgets as widgets
+from functools import lru_cache
+from geopy.geocoders import Nominatim
+
+# Load the dataset
+df = pd.read_csv('/content/FIFA_data.csv')
+
+# Quick view of the dataset
+display(df.head())
+
+# Data Cleaning - keep only relevant columns if needed
+relevant_columns = ['Name', 'Age', 'Nationality', 'Overall', 'Potential', 'Club', 'Value', 'Wage', 'Position']
+df = df[relevant_columns].dropna()
+
+# Convert Value and Wage to numerical if needed
+def value_to_float(x):
+    if isinstance(x, str):
+        x = x.replace('€', '').strip()
+        if 'M' in x:
+            return float(x.replace('M', '')) * 1_000_000
+        elif 'K' in x:
+            return float(x.replace('K', '')) * 1_000
+        elif x.isnumeric():
+            return float(x)
+    return 0
+
+df['Value'] = df['Value'].apply(value_to_float)
+df['Wage'] = df['Wage'].apply(value_to_float)
+
+# Create a score for "Top Emerging Players" (High Potential, Low Age)
+df['Emerging_Score'] = (df['Potential'] - df['Overall']) + (100 - df['Age'])
+
+# Setup geolocator
+geolocator = Nominatim(user_agent="geoapiExercises")
+
+@lru_cache(maxsize=None)
+def get_country_coordinates(country_name):
+    try:
+        location = geolocator.geocode(country_name, timeout=10)
+        if location:
+            return location.latitude, location.longitude
+    except:
+        return None, None
+    return None, None
+
+# Interactive Widgets
+position_dropdown = widgets.Dropdown(
+    options=['All'] + sorted(df['Position'].dropna().unique()),
+    description='Position:',
+    value='All'
+)
+
+min_age_slider = widgets.IntSlider(
+    value=16, min=16, max=40, step=1, description='Min Age'
+)
+
+max_age_slider = widgets.IntSlider(
+    value=24, min=16, max=40, step=1, description='Max Age'
+)
+
+potential_slider = widgets.IntSlider(
+    value=80, min=60, max=99, step=1, description='Min Potential'
+)
+
+output_area = widgets.Output()
+
+# Function to generate simple logo URL from club name
+def get_club_logo_url(club_name):
+    base_url = "https://logo.clearbit.com/"
+    domain = club_name.lower().replace(' ', '') + ".com"
+    return base_url + domain
+
+def update_table(position, min_age, max_age, potential):
+    with output_area:
+        clear_output(wait=True)
+        temp_df = df
+        if position != 'All':
+            temp_df = temp_df[temp_df['Position'] == position]
+        temp_df = temp_df[(temp_df['Age'] >= min_age) & (temp_df['Age'] <= max_age) & (temp_df['Potential'] >= potential)]
+        temp_df = temp_df.sort_values(by='Emerging_Score', ascending=False).head(30)
+
+        # Enhanced table display with club logos
+        display(HTML("<h3>Top Players Table with Club Logos</h3>"))
+        table_html = "<table border='1'><tr><th>Name</th><th>Age</th><th>Nationality</th><th>Club</th><th>Position</th><th>Overall</th><th>Potential</th><th>Value</th><th>Wage</th><th>Club Logo</th></tr>"
+        for _, row in temp_df.iterrows():
+            logo_url = get_club_logo_url(row['Club'])
+            table_html += f"<tr><td>{row['Name']}</td><td>{row['Age']}</td><td>{row['Nationality']}</td><td>{row['Club']}</td><td>{row['Position']}</td><td>{row['Overall']}</td><td>{row['Potential']}</td><td>{row['Value']}</td><td>{row['Wage']}</td><td><img src='{logo_url}' height='20'></td></tr>"
+        table_html += "</table>"
+        display(HTML(table_html))
+
+        tab = widgets.Tab()
+
+        tab_contents = ['Bar Chart', 'Scatter Plot', 'World Map']
+        children = []
+
+        # Plot 1: Bar Chart for Potential
+        fig_bar = px.bar(temp_df, x='Name', y='Potential', color='Nationality', title='Top Potential Players')
+        bar_output = widgets.Output()
+        with bar_output:
+            fig_bar.show()
+        children.append(bar_output)
+
+        # Plot 2: Scatter for Overall vs Potential
+        fig_scatter = px.scatter(temp_df, x='Overall', y='Potential', color='Age', size='Emerging_Score', hover_name='Name', title='Overall vs Potential')
+        scatter_output = widgets.Output()
+        with scatter_output:
+            fig_scatter.show()
+        children.append(scatter_output)
+
+        # Map: Nationality Distribution
+        nationality_counts = temp_df['Nationality'].value_counts().reset_index()
+        nationality_counts.columns = ['Nationality', 'Count']
+
+        m = folium.Map(location=[20,0], zoom_start=2)
+        marker_cluster = MarkerCluster().add_to(m)
+
+        for _, row in nationality_counts.iterrows():
+            lat, lon = get_country_coordinates(row['Nationality'])
+            if lat is not None and lon is not None:
+                folium.Marker(location=[lat, lon], popup=f"{row['Nationality']}: {row['Count']} players").add_to(marker_cluster)
+            else:
+                print(f"Warning: No coordinates found for {row['Nationality']}")
+
+        map_output = widgets.Output()
+        with map_output:
+            display(m)
+        children.append(map_output)
+
+        tab.children = children
+        for i in range(len(tab_contents)):
+            tab.set_title(i, tab_contents[i])
+
+        display(tab)
+
+# Show interactive widgets
+ui = widgets.VBox([
+    position_dropdown,
+    min_age_slider,
+    max_age_slider,
+    potential_slider,
+    output_area
+])
+
+widgets.interact(update_table,
+                 position=position_dropdown,
+                 min_age=min_age_slider,
+                 max_age=max_age_slider,
+                 potential=potential_slider)
+
+display(ui)
+
